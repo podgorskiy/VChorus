@@ -72,14 +72,16 @@ void CreateConsole()
 Reverb::Reverb(const InstanceInfo& info)
 : Plugin(info, MakeConfig(kNumParams, kNumPresets))
 {
-    CreateConsole();
+    // CreateConsole();
 
     GetParam(kGain)->InitGain("Gain");
     GetParam(kDelay)->InitDoubleExp("Delay", 20., 1.0, 1000.0, 0.1);
-    GetParam(kVoices)->InitDouble("Voices", 16, 1, 200.0, 0.1);
-    GetParam(kDamper)->InitDouble("Damper", 0.1, 0.0, 10.0, 0.1);
+    GetParam(kVoices)->InitDouble("Voices", 50, 1, 200.0, 0.1);
+    GetParam(kDamper)->InitDouble("Damper", 0.0, 0.0, 10.0, 0.1);
     GetParam(kMix)->InitPercentage("Mix", 100.0);
-    GetParam(kHFCut)->InitPercentage("High cut", 90.0);
+    GetParam(kHFCut)->InitPercentage("High cut", 100.0);
+    GetParam(kMaxRate)->InitDouble("MaxRate", 330.0, 0.0, 1000.0, 0.1, "ms");
+    GetParam(kRateUpdate)->InitDouble("Rate Update", 1000.0, 0.0, 2000.0, 0.1, "ms");
 
 
 #if IPLUG_EDITOR // http://bit.ly/2S64BDd
@@ -93,14 +95,26 @@ Reverb::Reverb(const InstanceInfo& info)
         pGraphics->LoadFont("Roboto-Regular", ROBOTO_FN);
         const IRECT b = pGraphics->GetBounds();
         // pGraphics->AttachControl(new ITextControl(b.GetMidVPadded(50), "Hello iPlug 2!", IText(50)));
-        pGraphics->AttachControl(new IVKnobControl(b.GetCentredInside(100).GetHShifted(-200), kGain));
+        pGraphics->AttachControl(new IVKnobControl(b.GetCentredInside(100).GetHShifted(400), kGain));
         pGraphics->AttachControl(new IVKnobControl(b.GetCentredInside(100).GetHShifted(-100), kDelay));
         pGraphics->AttachControl(new IVKnobControl(b.GetCentredInside(100).GetHShifted(0), kVoices));
         pGraphics->AttachControl(new IVKnobControl(b.GetCentredInside(100).GetHShifted(100), kDamper));
         pGraphics->AttachControl(new IVKnobControl(b.GetCentredInside(100).GetHShifted(200), kMix));
         pGraphics->AttachControl(new IVKnobControl(b.GetCentredInside(100).GetHShifted(300), kHFCut));
+        pGraphics->AttachControl(new IVKnobControl(b.GetCentredInside(100).GetHShifted(-200), kMaxRate));
+        pGraphics->AttachControl(new IVKnobControl(b.GetCentredInside(100).GetHShifted(-300), kRateUpdate));
     };
 #endif
+}
+
+inline float randf()
+{
+    return ((rand() % RAND_MAX) * 1.0f / RAND_MAX);
+}
+
+inline float srandf()
+{
+    return randf() * 2.0f - 1.0f;
 }
 
 #if IPLUG_DSP
@@ -113,7 +127,12 @@ void Reverb::ProcessBlock(sample** inputs, sample** outputs, int nFrames)
     const float mix = GetParam(kMix)->Value() / 100.0;
     const float hf = GetParam(kHFCut)->Value() / 100.0;
     const int nChans = NOutChansConnected();
-    int delay_in_samples = GetSampleRate() * delay_ms / 1000;
+    const int delay_in_samples = GetSampleRate() * delay_ms / 1000;
+    const float max_delay_rate_samples_per_samples = GetParam(kMaxRate)->Value() / 1000;
+    const float update_time = GetParam(kRateUpdate)->Value();
+
+    time_since_last_update += nFrames / GetSampleRate() * 1000.0;
+
 
     int buffer_size = 0;
     {
@@ -129,34 +148,64 @@ void Reverb::ProcessBlock(sample** inputs, sample** outputs, int nFrames)
         buffer_size = static_cast<size_t>(v);
     }
 
+    bool need_resize = false;
+
     if (nChans * voices_count != mDelays.GetSize() || m_old_delay_in_samples != delay_in_samples || m_old_dumper != damper)
     {
+        need_resize = nChans * voices_count != mDelays.GetSize();
+
         m_old_delay_in_samples = delay_in_samples;
         m_old_dumper = damper;
 
-        mDelays.Resize(nChans * voices_count);
-        mMagnitude.Resize(nChans * voices_count);
-        mLowPass.Resize(nChans * voices_count);
-        mLowPass.Set(nullptr, nChans * voices_count);
+        if (need_resize)
+        {
+            mDelays.Resize(nChans * voices_count);
+            mMagnitude.Resize(nChans * voices_count);
+            mLowPass.Resize(nChans * voices_count);
+            mRates.Resize(nChans * voices_count);
+            mLowPass.Set(nullptr, nChans * voices_count);
+        }
+
         auto* delays = mDelays.Get();
         auto* magnitude = mMagnitude.Get();
+        auto* rates = mRates.Get();
 
         for (int i = 0; i < nChans * voices_count; ++i)
         {
-            int x = i % voices_count;
             if (delay_in_samples != 0)
             {
-                delays[i] = rand() % delay_in_samples;
-                magnitude[i] = ((rand() % 1024) / 1024.0f / powf(2.0f, delays[i] / delay_ms * damper));
+                delays[i] = randf() * delay_in_samples;
+                rates[i] = srandf() * max_delay_rate_samples_per_samples;
+                magnitude[i] = randf() / powf(2.0f, delays[i] / delay_ms * damper);
             }
             else
             {
                 delays[i] = 0;
+                rates[i] = 0;
                 magnitude[i] = .5;
             }
         }
     }
-    
+
+    if (time_since_last_update > update_time)
+    {
+        time_since_last_update = 0;
+
+        auto* rates = mRates.Get();
+
+        for (int i = 0; i < nChans * voices_count; ++i)
+        {
+            if (delay_in_samples != 0)
+            {
+                rates[i] = srandf() * max_delay_rate_samples_per_samples;
+            }
+            else
+            {
+                rates[i] = 0;
+            }
+        }
+    }
+
     if (mBuffer.GetSize() != buffer_size * nChans)
     {
         mBuffer.Resize(buffer_size * nChans);
@@ -165,14 +214,14 @@ void Reverb::ProcessBlock(sample** inputs, sample** outputs, int nFrames)
 
     auto* buffer = mBuffer.Get();
     auto* delays = mDelays.Get();
-    auto* magnitude = mMagnitude.Get();
+    const auto* magnitude = mMagnitude.Get();
     auto* low_pass = mLowPass.Get();
-
-    float k = GetSampleRate() / 1000.0;
+    const auto* rates = mRates.Get();
 
     for (int s = 0; s < nFrames; s++) {
         mWriteAddress %= buffer_size;
 
+        //#pragma omp parallel for
         for (int c = 0; c < nChans; c++) {
             auto input = inputs[c][s];
             const int offset = c * buffer_size;
@@ -181,19 +230,33 @@ void Reverb::ProcessBlock(sample** inputs, sample** outputs, int nFrames)
 
             float out = 0.0;
 
-            // #pragma omp parallel for reduction (+:out)
             for(int j = 0; j < voices_count; ++j)
             {
                 int v = j + voices_count * c;
-                int delta = delays[v] * k;
+                float lp = low_pass[v];
+                float mag = magnitude[v];
+                float delta = delays[v];
+                delta += rates[v];
 
-                int32_t readAddress = mWriteAddress - delta;
+                if (delta < 0)
+                {
+                    delta += delay_in_samples;
+                }
+                else if (delta >= delay_in_samples)
+                {
+                    delta -= delay_in_samples;
+                }
+
+                int32_t readAddress = mWriteAddress - int(delta);
                 readAddress = (readAddress + buffer_size * 100) % buffer_size;
 
-                float input = buffer[offset + readAddress] * magnitude[v];
+                float input = buffer[offset + readAddress] * mag;
 
-                low_pass[v] = low_pass[v] * (1.0 - hf * 0.99) + input * hf * 0.99;
-                out += low_pass[v];
+                lp = lp * (1.0 - hf * 0.99) + input * hf * 0.99;
+                out += lp;
+
+                low_pass[v] = lp;
+                delays[v] = delta;
             }
 
             outputs[c][s] = gain * (out * mix + input * (1.0 - mix)) ;

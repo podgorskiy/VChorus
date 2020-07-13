@@ -12,6 +12,8 @@ enum EParams
     kDamper = 3,
     kMix = 4,
     kHFCut = 5,
+    kMaxRate = 6,
+    kRateUpdate = 7,
     kNumParams
 };
 
@@ -28,11 +30,14 @@ public:
 #endif
   WDL_TypedBuf<float> mBuffer;
   WDL_TypedBuf<float> mDelays;
+  WDL_TypedBuf<float> mRates;
   WDL_TypedBuf<float> mMagnitude;
   WDL_TypedBuf<float> mLowPass;
 
   uint32_t mWriteAddress = 0;
   uint32_t mDTSamples = 0;
+
+  float time_since_last_update = 0;
 
   int m_old_delay_in_samples = 0;
   float m_old_dumper = 0;
