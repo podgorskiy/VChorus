@@ -75,13 +75,13 @@ Reverb::Reverb(const InstanceInfo& info)
     // CreateConsole();
 
     GetParam(kGain)->InitGain("Gain");
-    GetParam(kDelay)->InitDoubleExp("Delay", 20., 1.0, 1000.0, 0.1);
+    GetParam(kDelay)->InitDoubleExp("Delay Range", 20., 1.0, 1000.0, 0.1);
     GetParam(kVoices)->InitDouble("Voices", 50, 1, 200.0, 0.1);
     GetParam(kDamper)->InitDouble("Damper", 0.0, 0.0, 10.0, 0.1);
     GetParam(kMix)->InitPercentage("Mix", 100.0);
-    GetParam(kHFCut)->InitPercentage("High cut", 100.0);
-    GetParam(kMaxRate)->InitDouble("MaxRate", 330.0, 0.0, 1000.0, 0.1, "ms");
-    GetParam(kRateUpdate)->InitDouble("Rate Update", 1000.0, 0.0, 2000.0, 0.1, "ms");
+    GetParam(kHFCut)->InitPercentage("Low-Pass", 100.0);
+    GetParam(kMaxRate)->InitDouble("Rate Range", 330.0, 0.0, 1000.0, 0.1, "ms");
+    GetParam(kRateUpdate)->InitDouble("Rate Update", 500.0, 0.0, 1000.0, 0.1, "ms");
 
 
 #if IPLUG_EDITOR // http://bit.ly/2S64BDd
@@ -216,7 +216,7 @@ void Reverb::ProcessBlock(sample** inputs, sample** outputs, int nFrames)
     auto* delays = mDelays.Get();
     const auto* magnitude = mMagnitude.Get();
     auto* low_pass = mLowPass.Get();
-    const auto* rates = mRates.Get();
+    auto* rates = mRates.Get();
 
     for (int s = 0; s < nFrames; s++) {
         mWriteAddress %= buffer_size;
@@ -236,15 +236,19 @@ void Reverb::ProcessBlock(sample** inputs, sample** outputs, int nFrames)
                 float lp = low_pass[v];
                 float mag = magnitude[v];
                 float delta = delays[v];
-                delta += rates[v];
+                float rate = rates[v];
+                delta += rate;
 
+                // bouncing
                 if (delta < 0)
                 {
-                    delta += delay_in_samples;
+                    delta = -delta;
+                    rates[v] = -rate;
                 }
                 else if (delta >= delay_in_samples)
                 {
-                    delta -= delay_in_samples;
+                    delta = 2 * delay_in_samples - delta;
+                    rates[v] = -rate;
                 }
 
                 int32_t readAddress = mWriteAddress - int(delta);
